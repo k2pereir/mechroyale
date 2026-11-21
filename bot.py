@@ -234,12 +234,14 @@ class Bot:
                 dx, dy = tx - x, ty - y
                 d = math.hypot(dx, dy)
 
-                if d < 75:
-                    if d < 28:
-                        move_goal = [x - dx, y - dy]
-                    else:
-                        side = 1 if me["id"] % 2 == 0 else -1
-                        move_goal = [x - dy * side, y + dx * side]
+                low_hp = me["hp"] < 650
+                dangerous_charge = target.get("charging", False) and d < 60
+
+                if low_hp or dangerous_charge or d < 42:
+                    move_goal = [x - dx, y - dy]
+                elif d < 75:
+                    side = 1 if me["id"] % 2 == 0 else -1
+                    move_goal = [x - dy * side, y + dx * side]
                 elif objectives:
                     move_goal = min(objectives, key=lambda a: a[0])[1]
                 else:
@@ -258,6 +260,7 @@ class Bot:
         action["boost"] = (
             energy > 35
             and (zone_distance > safe_radius or
+                 me["hp"] < 650 or
                  (target is None and math.dist(pos[:2], move_goal) > 25))
         )
 
