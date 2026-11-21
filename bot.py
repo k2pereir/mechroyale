@@ -157,7 +157,7 @@ class Grid:
 
 
 class Bot:
-    name = "mobile-survivor-5"
+    name = "mobile-survivor-7"
 
     def __init__(self, hello: mf.Hello):
         self.config = hello["config"]
@@ -196,7 +196,7 @@ class Bot:
             ).lower()
             score = 0
             if "armor" in text or "damage taken" in text or "resist" in text:
-                score += 30
+                score += 22
             if "regen" in text:
                 score += 24
             if "max_hp" in text or "health" in text or "max hp" in text:
@@ -206,11 +206,11 @@ class Bot:
             if "boost" in text or "energy" in text:
                 score += 12
             if "gun_rate" in text or "fire rate" in text:
-                score += 11
+                score += 28
             if "damage" in text and "damage taken" not in text:
-                score += 10
+                score += 30
             if "cooldown" in text:
-                score += 9
+                score += 15
             if "sensors" in text or "sensor" in text:
                 score += 7
             scores.append(score)
@@ -356,8 +356,8 @@ class Bot:
             target = min(enemies[:5], key=_tscore)
             tkind = "mech"
         else:
-            cand = [n for n in npcs if dist(pos, n["pos"]) < 70.0 and abs(n["pos"][2] - z) < 8.0]
-            if cand and hp > 0.45 * maxhp:
+            cand = [n for n in npcs if dist(pos, n["pos"]) < 110.0 and abs(n["pos"][2] - z) < 8.0]
+            if cand and hp > 0.35 * maxhp:
                 target = min(cand, key=lambda n: dist(pos, n["pos"]))
                 tkind = "npc"
             else:
@@ -426,8 +426,8 @@ class Bot:
 
         flee_cond = (
             len(close) >= 3
-            or (hp < maxhp * 0.4 and (near or recently_hit))
-            or (tkind == "mech" and tdist < 19.0)
+            or (hp < maxhp * 0.25 and (near or recently_hit))
+            or (tkind == "mech" and tdist < 14.0)
         )
 
         if zone_out:
@@ -459,16 +459,22 @@ class Bot:
                 vy += inward_f[1] * 0.9
             move_dir = unit([vx, vy])
             boost_wanted = True
-        elif tkind == "mech" and tdist < 95.0:
+        elif tkind == "mech" and tdist < 120.0:
             tp = target["pos"]
             away = unit([x - tp[0], y - tp[1]])
             if away == [0.0, 0.0]:
                 away = [1.0, 0.0]
             tang = [-away[1] * self.side, away[0] * self.side]
-            ideal = 50.0
+            ideal = 40.0
             tw = target.get("weapons") or []
-            if "lightning" in tw:
+            if "lightning" in by_kind:
+                # lightning only reaches 45 m: close in so it actually fires (unless they hold a mortar)
+                ideal = 55.0 if "mortar" in tw else 32.0
+            elif "lightning" in tw:
                 ideal = 70.0
+            thp = target.get("hp", 1400) / max(1.0, target.get("max_hp", 1400))
+            if thp < 0.3 and hp > maxhp * 0.5:
+                ideal = min(ideal, 28.0)  # finish off a wounded enemy
             radial = clamp((ideal - tdist) / 20.0, -1.0, 1.0)
             vx = tang[0] + away[0] * radial
             vy = tang[1] + away[1] * radial
@@ -496,7 +502,7 @@ class Bot:
             if goal is None and not hold_still and not near:
                 if wanted:
                     pk = min(wanted, key=lambda p: dist(pos, p["pos"]))
-                    if dist(pos, pk["pos"]) < 90.0:
+                    if dist(pos, pk["pos"]) < 140.0:
                         goal = pk["pos"]
                 if goal is None:
                     cubes = [
