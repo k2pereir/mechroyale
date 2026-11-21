@@ -9,7 +9,6 @@ import traceback
 import mechfight as mf
 
 PI = math.pi
-EARLY_T = 150.0   # before this match-time, avoid duels and prioritise loot / drops
 TAU = 2.0 * math.pi
 
 
@@ -147,17 +146,6 @@ class Grid:
             return True
         return self.g[j * self.gx + i] == 1
 
-    def los_blocked(self, ax, ay, bx, by):
-        d = math.hypot(bx - ax, by - ay)
-        if d < 14.0:
-            return False
-        n = int(d / 3.0)
-        for k in range(2, n - 1):
-            f = k / n
-            if self.blocked(ax + (bx - ax) * f, ay + (by - ay) * f):
-                return True
-        return False
-
     def clear(self, x, y, ang, length):
         c, s = math.cos(ang), math.sin(ang)
         d = 3.0
@@ -169,7 +157,7 @@ class Grid:
 
 
 class Bot:
-    name = "mobile-survivor-4"
+    name = "mobile-survivor-5"
 
     def __init__(self, hello: mf.Hello):
         self.config = hello["config"]
@@ -184,9 +172,6 @@ class Bot:
         self.unstick_until = -1
         self.prev_move = [0.0, 0.0]
         self.err_logged = False
-        self.cover = None
-        self.cover_tick = -99
-        self.hide_until = -1.0
 
     # ------------------------------------------------------------------ helpers
     def zone_state(self, zone, t):
@@ -242,42 +227,6 @@ class Bot:
             if self.grid.clear(x, y, a, 15.0):
                 return [math.cos(a), math.sin(a)]
         return d
-
-    def find_cover(self, pos, threats, fc, fr, tick):
-        """Nearby spot hidden (building-blocked) from the threats. Cached a few ticks."""
-        g = self.grid
-        x, y = pos[0], pos[1]
-        if self.cover is not None and tick - self.cover_tick < 6:
-            cx, cy = self.cover
-            if dist(pos, self.cover) > 4.0 and all(g.los_blocked(th[0], th[1], cx, cy) for th in threats):
-                return self.cover
-        t0 = time.perf_counter()
-        best, bs = None, -1e9
-        near_th = min(threats, key=lambda th: math.hypot(th[0] - x, th[1] - y))
-        tdir = unit([near_th[0] - x, near_th[1] - y])
-        for r in (14.0, 26.0, 40.0, 58.0):
-            for k in range(16):
-                if time.perf_counter() - t0 > 0.018:
-                    break
-                a = k * TAU / 16.0 + (0.1 * r)
-                ca, sa = math.cos(a), math.sin(a)
-                cx, cy = x + r * ca, y + r * sa
-                if g.blocked(cx, cy) or dist((cx, cy), fc) > fr * 0.85:
-                    continue
-                mind = min(math.hypot(th[0] - cx, th[1] - cy) for th in threats)
-                if mind < 22.0:
-                    continue
-                if not g.clear(x, y, a, r):
-                    continue
-                hidden = sum(1 for th in threats if g.los_blocked(th[0], th[1], cx, cy))
-                if hidden < len(threats):
-                    continue
-                score = 100.0 + min(mind, 90.0) * 0.5 - r * 0.8 - 40.0 * max(0.0, ca * tdir[0] + sa * tdir[1])
-                if score > bs:
-                    bs, best = score, (cx, cy)
-        self.cover = best
-        self.cover_tick = tick
-        return best
 
     def dodge(self, pos, projectiles):
         dv = [0.0, 0.0]
@@ -400,7 +349,11 @@ class Bot:
         target = None
         tkind = None
         if enemies:
-            target = enemies[0]
+            # nearest enemy, with a mild preference for wounded ones (finishing kills = cubes + loot)
+            def _tscore(m):
+                frac = m.get("hp", 1400) / max(1.0, m.get("max_hp", 1400))
+                return dist(pos, m["pos"]) + 25.0 * frac
+            target = min(enemies[:5], key=_tscore)
             tkind = "mech"
         else:
             cand = [n for n in npcs if dist(pos, n["pos"]) < 70.0 and abs(n["pos"][2] - z) < 8.0]
@@ -471,66 +424,15 @@ class Bot:
         boost_wanted = False
         hold_still = False
 
-        # Where we'd like to go while avoiding fights: weapons, drops, cubes.
-        loot_pull = None
-        if wanted:
-            pk = min(wanted, key=lambda p: dist(pos, p["pos"]))
-            if dist(pos, pk["pos"]) < 160.0:
-                loot_pull = pk["pos"]
-        if loot_pull is None:
-            for dr in obs.get("drops", []):
-                dd = dist(pos, dr["pos"])
-                holder = dr.get("holder")
-                if holder is not None and holder != myid:
-                    continue
-                if dist(dr["pos"], fc) > fr + 10.0 or dd > 260.0:
-                    continue
-                if dr.get("lands_in", 0.0) <= dd / max(walk, 1.0) + 8.0 and dd > dr.get("radius", 8.0) - 2.0:
-                    loot_pull = dr["pos"]
-                    break
-        if loot_pull is None:
-            cb = [
-                c for c in obs.get("cubes", [])
-                if dist(pos, c["pos"]) < 40.0 and abs(c["pos"][2] - z) < 5.0
-                and dist(c["pos"], fc) < fr * 0.85
-            ]
-            if cb:
-                loot_pull = min(cb, key=lambda c: dist(pos, c["pos"]))["pos"]
-
-        # Early game: do not duel. Keep moving away (still shooting back) and loot.
-        avoid_early = (t < EARLY_T) and tkind == "mech" and tdist < 100.0
         flee_cond = (
-            avoid_early
-            or len(close) >= 2
+            len(close) >= 3
             or (hp < maxhp * 0.4 and (near or recently_hit))
             or (tkind == "mech" and tdist < 19.0)
         )
 
-        hidden_hold = False
-        cover_move = None
-        if (
-            self.grid.ok and z < 8.0 and near and flee_cond and not zone_out
-            and not (recently_hit and tdist < 40.0)
-        ):
-            threats = [e["pos"] for e in near[:4]]
-            g = self.grid
-            is_hidden = all(g.los_blocked(th[0], th[1], x, y) for th in threats)
-            if is_hidden and dist(pos, fc) < fr * 0.85 and tdist > 20.0:
-                cover_move = [0.0, 0.0]
-                hidden_hold = True
-                self.hide_until = t + (6.0 if hp < maxhp * 0.9 else 3.0)
-            else:
-                spot = self.find_cover(pos, threats, fc, fr, tick)
-                if spot is not None:
-                    cover_move = unit([spot[0] - x, spot[1] - y])
-
         if zone_out:
             move_dir = inward_f
             boost_wanted = True
-        elif cover_move is not None:
-            flee = True
-            move_dir = cover_move
-            boost_wanted = (tdist < 60.0) and not hidden_hold
         elif flee_cond and (near or recently_hit):
             flee = True
             if near:
@@ -555,14 +457,8 @@ class Bot:
             if out_of_future:
                 vx += inward_f[0] * 0.9
                 vy += inward_f[1] * 0.9
-            if loot_pull is not None and dist(pos, loot_pull) > 1.5:
-                ld = unit([loot_pull[0] - x, loot_pull[1] - y])
-                if ld[0] * esc[0] + ld[1] * esc[1] > -0.2:  # not running into the enemy
-                    wgt = 1.2 if avoid_early else 0.6
-                    vx += ld[0] * wgt
-                    vy += ld[1] * wgt
             move_dir = unit([vx, vy])
-            boost_wanted = (tdist < 70.0) or recently_hit or hp < maxhp * 0.4
+            boost_wanted = True
         elif tkind == "mech" and tdist < 95.0:
             tp = target["pos"]
             away = unit([x - tp[0], y - tp[1]])
@@ -582,8 +478,6 @@ class Bot:
             move_dir = unit([vx, vy])
         else:
             goal = None
-            if t < self.hide_until and not near and not recently_hit and dist(pos, fc) < fr * 0.85:
-                hold_still = True
             # supply drops
             for dr in obs.get("drops", []):
                 dd = dist(pos, dr["pos"])
@@ -826,8 +720,6 @@ class Bot:
 
         aim_yaw = (aim_yaw + PI) % TAU - PI
         action["aim"] = [aim_yaw, aim_pitch]
-        if hidden_hold:
-            fire = [False, False]
         action["fire"] = fire
         if reload:
             action["reload"] = True
