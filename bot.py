@@ -9,7 +9,7 @@ import traceback
 import mechfight as mf
 
 PI = math.pi
-EARLY_T = 150.0
+EARLY_T = 150.0   # before this match-time, avoid duels and prioritise loot / drops
 TAU = 2.0 * math.pi
 
 
@@ -127,6 +127,7 @@ class Grid:
                         if holes and any(pip(h, cx, cy) for h in holes):
                             continue
                         g[j * gx + i] = 1
+        # dilate by one cell (mech radius 2.5 m)
         cells = [idx for idx in range(gx * gy) if g[idx]]
         out = bytearray(g)
         for idx in cells:
@@ -173,6 +174,7 @@ class Bot:
         self.prev_move = [0.0, 0.0]
         self.err_logged = False
 
+    # ------------------------------------------------------------------ helpers
     def zone_state(self, zone, t):
         start = zone["shrink_start"]
         end = zone["shrink_end"]
@@ -278,6 +280,7 @@ class Bot:
                 dv[1] += n[1] * 1.6
         return dv
 
+    # ------------------------------------------------------------------ main
     def act(self, obs: mf.Observation) -> mf.Action:
         try:
             return self._act(obs)
@@ -309,12 +312,14 @@ class Bot:
         cur_aim = me.get("aim", [0.0, 0.0])
         cur_yaw, cur_pitch = cur_aim[0], cur_aim[1]
 
+        # ---------- zone
         zc, zr = self.zone_state(obs["zone"], t)
         fc, fr = self.zone_state(obs["zone"], t + 10.0)
         zone_out = dist(pos, zc) > zr - 6.0
         inward_f = unit([fc[0] - x, fc[1] - y])
         out_of_future = dist(pos, fc) > max(10.0, fr * 0.75)
 
+        # ---------- weapons
         weapons = me.get("weapons", [None, None])
         while len(weapons) < 2:
             weapons.append(None)
@@ -327,12 +332,14 @@ class Bot:
         if "laser" in by_kind and by_kind["laser"][1].get("charge", 0.0) > 0.0:
             charging_laser = True
 
+        # ---------- events
         for e in obs.get("events", []):
             if e.get("type") == "damaged" and e.get("bearing") is not None:
                 self.last_dmg_t = t
                 self.last_dmg_bearing = e["bearing"]
         recently_hit = (t - self.last_dmg_t) < 2.0
 
+        # ---------- perception
         mechs = obs.get("mechs", [])
         enemies = [m for m in mechs if m.get("kind") == "mech" and m.get("id") != myid]
         enemies.sort(key=lambda m: dist(pos, m["pos"]))
@@ -370,6 +377,7 @@ class Bot:
                     sound_threat = s["bearing"]
                     break
 
+        # strafe flip
         if tick >= self.next_flip:
             self.side = -self.side
             self.next_flip = tick + self.rng.randint(5, 14)
@@ -385,6 +393,7 @@ class Bot:
         if obs.get("offer"):
             action["pick"] = self.choose_upgrade(obs["offer"], me)
 
+        # ---------- weapon pickups (take)
         pickups = [
             p for p in obs.get("pickups", [])
             if p.get("kind") in ("mortar", "laser", "lightning") and abs(z - p["pos"][2]) < 3.8
@@ -406,11 +415,13 @@ class Bot:
                     action["drop"] = 1
                 break
 
+        # ---------- movement decision
         move_dir = None
         flee = False
         boost_wanted = False
         hold_still = False
 
+        # Where we'd like to go while avoiding fights: weapons, drops, cubes.
         loot_pull = None
         if wanted:
             pk = min(wanted, key=lambda p: dist(pos, p["pos"]))
@@ -436,6 +447,7 @@ class Bot:
             if cb:
                 loot_pull = min(cb, key=lambda c: dist(pos, c["pos"]))["pos"]
 
+        # Early game: do not duel. Keep moving away (still shooting back) and loot.
         avoid_early = (t < EARLY_T) and tkind == "mech" and tdist < 100.0
         flee_cond = (
             avoid_early
@@ -473,7 +485,7 @@ class Bot:
                 vy += inward_f[1] * 0.9
             if loot_pull is not None and dist(pos, loot_pull) > 1.5:
                 ld = unit([loot_pull[0] - x, loot_pull[1] - y])
-                if ld[0] * esc[0] + ld[1] * esc[1] > -0.2:
+                if ld[0] * esc[0] + ld[1] * esc[1] > -0.2:  # not running into the enemy
                     wgt = 1.2 if avoid_early else 0.6
                     vx += ld[0] * wgt
                     vy += ld[1] * wgt
@@ -498,6 +510,7 @@ class Bot:
             move_dir = unit([vx, vy])
         else:
             goal = None
+            # supply drops
             for dr in obs.get("drops", []):
                 dd = dist(pos, dr["pos"])
                 holder = dr.get("holder")
@@ -555,6 +568,7 @@ class Bot:
         if move_dir is None:
             move_dir = [0.0, 0.0]
 
+        # ---------- dodge incoming shots
         dv = self.dodge(pos, obs.get("projectiles", []))
         dodging = abs(dv[0]) + abs(dv[1]) > 1e-6
         if dodging:
@@ -563,11 +577,13 @@ class Bot:
             if ln > 1.0:
                 move_dir = [move_dir[0] / ln, move_dir[1] / ln]
 
+        # ---------- obstacle steering
         if z < 8.0 and (move_dir[0] != 0.0 or move_dir[1] != 0.0):
             ln = math.hypot(move_dir[0], move_dir[1])
             st = self.steer(pos, [move_dir[0] / ln, move_dir[1] / ln])
             move_dir = [st[0] * min(1.0, ln), st[1] * min(1.0, ln)]
 
+        # ---------- stuck detection
         speed = math.hypot(vel[0], vel[1])
         pm = math.hypot(self.prev_move[0], self.prev_move[1])
         if pm > 0.5 and speed < 0.2 * walk and not charging_laser:
@@ -595,6 +611,7 @@ class Bot:
         action["boost"] = bool(boost_wanted and energy > 25.0)
         action["jump"] = jump
 
+        # ---------- aiming & firing
         aim_yaw = cur_yaw
         aim_pitch = 0.0
         fire = [False, False]
@@ -616,6 +633,7 @@ class Bot:
             lightning = by_kind.get("lightning")
             mortar = by_kind.get("mortar")
 
+            # ideal aims per weapon
             def ang_to(pt, o=origin):
                 yaw = math.atan2(pt[1] - y, pt[0] - x)
                 pit = math.atan2(pt[2] - o[2], max(0.1, math.hypot(pt[0] - x, pt[1] - y)))
@@ -647,6 +665,7 @@ class Bot:
                     tt = hz / max(1.0, spd * math.cos(pit_m))
                 mortar_aim = (yaw_m, pit_m)
 
+            # choose which weapon steers the torso
             mode = "gun" if gun else None
             if laser and tkind in ("mech", "npc"):
                 lrange = laser[1].get("stats", {}).get("range", 280.0)
@@ -694,11 +713,11 @@ class Bot:
                     if charge < full:
                         fire[li] = True
                     elif le > tol * 1.5 and charge < full + 1.2:
-                        fire[li] = True
+                        fire[li] = True  # keep holding until the aim settles
                     else:
-                        fire[li] = False
+                        fire[li] = False  # release
                 elif charge > 0.0:
-                    fire[li] = False
+                    fire[li] = False  # release stale charge
 
             if lightning:
                 ni, nw = lightning
