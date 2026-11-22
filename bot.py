@@ -340,6 +340,18 @@ class Bot:
                 return [math.cos(a), math.sin(a)]
         return d
 
+    def has_shot_los(self, pos, target):
+        if not self.grid.ok:
+            return True
+        x, y = pos[0], pos[1]
+        tx, ty = target[0], target[1]
+        dx, dy = tx - x, ty - y
+        distance = math.hypot(dx, dy)
+        if distance < 0.1:
+            return True
+        angle = math.atan2(dy, dx)
+        return self.grid.clear(x, y, angle, distance)
+
     # ---------------- dodging
     def dodge(self, pos, projs):
         dv = [0.0, 0.0]
@@ -393,7 +405,7 @@ class Bot:
             try:
                 me = obs["self"]
                 zc, _ = self.zone_state(obs["zone"], obs["t"])
-                return {"tick": obs["tick"], "move": unit([zc[0] - me["pos"][0], zc[1] - me["pos"][1]]), "fire": [True, False]}
+                return {"tick": obs["tick"], "move": unit([zc[0] - me["pos"][0], zc[1] - me["pos"][1]]), "fire": [False, False]}
             except Exception:
                 return {"tick": obs.get("tick", 0)}
 
@@ -629,15 +641,21 @@ class Bot:
             if can_fire:
                 if gun:
                     gi, gw = gun
-                    if gw.get("reload", 0) > 0:
+                    if mode != "gun":
+                        pass
+                    elif gw.get("reload", 0) > 0:
                         pass
                     elif gw.get("ammo", 0) <= 0:
                         reload = True
-                    elif d < gw["stats"]["range"] * 0.95 and err(gaim) < tol:
+                    elif (
+                        d < gw["stats"]["range"] * 0.95
+                        and err(gaim) < tol
+                        and self.has_shot_los(origin, tp)
+                    ):
                         fire[gi] = True
                 if laser:
                     li, lw = laser; ch = lw.get("charge", 0); full = lw["stats"]["charge"] * 0.92
-                    if mode == "laser":
+                    if mode == "laser" and d <= lw["stats"]["range"] and self.has_shot_los(origin, tp):
                         le = err(laim)
                         if ch < full:
                             fire[li] = True
@@ -647,7 +665,8 @@ class Bot:
                             fire[li] = False
                 if light:
                     li2, lw2 = light
-                    if d <= lw2["stats"]["range"] - 3 and lw2["cooldown"] <= 0 and energy > 8 and abs(wrap(cyaw - math.atan2(tp[1] - y, tp[0] - x))) < 0.45:
+                    lightning_yaw = math.atan2(tp[1] - y, tp[0] - x)
+                    if d <= lw2["stats"]["range"] - 3 and lw2["cooldown"] <= 0 and energy > 8 and abs(wrap(cyaw - lightning_yaw)) < 0.45 and self.has_shot_los(origin, tp):
                         fire[li2] = True
                         if mode != "laser" and d < 30:
                             aim = [math.atan2(tp[1] - y, tp[0] - x), ang(cpt)[1]]
