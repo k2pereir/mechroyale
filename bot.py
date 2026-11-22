@@ -10,6 +10,7 @@ import mechfight as mf
 
 PI = math.pi
 TAU = 2.0 * math.pi
+P = {'ideal': 95.0, 'engage_r': 110.0, 'flee_hp': 0.45, 'cover': True, 'cover_any': True}
 
 
 def dist(a, b):
@@ -80,6 +81,7 @@ class Grid:
             self._load(map_info or {})
         except Exception:
             self.ok = False
+            sys.stderr.write("grid load failed:\n" + traceback.format_exc() + "\n")
 
     def _load(self, info):
         t0 = time.time()
@@ -199,7 +201,7 @@ class Grid:
 
 
 class Bot:
-    name = "mobile-survivor-8"
+    name = "avoider"
 
     def __init__(self, hello: mf.Hello):
         self.config = hello["config"]
@@ -330,6 +332,7 @@ class Bot:
             return self._act(obs)
         except Exception:
             if not self.err_logged:
+                sys.stderr.write(traceback.format_exc() + "\n")
                 self.err_logged = True
             try:
                 me = obs["self"]
@@ -381,6 +384,12 @@ class Bot:
                 self.last_dmg_t = t
                 self.last_dmg_bearing = e["bearing"]
         recently_hit = (t - self.last_dmg_t) < 2.0
+        for e in obs.get("events", []):
+            if e.get("type") == "damaged" and e.get("weapon") != "zone" and getattr(self, "_nl", 0) < 60:
+                self._nl = getattr(self, "_nl", 0) + 1
+                sys.stderr.write("t=%.1f HIT %s %.0f rear=%s by=%s hp=%.0f\n" % (t, e.get("weapon"), e.get("amount", 0), e.get("rear"), e.get("by"), hp))
+        if tick % 100 == 0:
+            sys.stderr.write("t=%.0f hp=%.0f/%.0f alive=%s cubes=%s w=%s pos=(%.0f,%.0f) in_zone=%s zr=%.0f\n" % (t, hp, maxhp, obs.get("alive"), me.get("cubes"), [w["kind"] if w else None for w in weapons], x, y, me.get("in_zone"), zr))
 
         # ---------- perception
         mechs = obs.get("mechs", [])
@@ -470,7 +479,7 @@ class Bot:
 
         flee_cond = (
             len(close) >= 3
-            or (hp < maxhp * 0.25 and (near or recently_hit))
+            or (hp < maxhp * P["flee_hp"] and (near or recently_hit))
             or (tkind == "mech" and tdist < 14.0)
         )
 
@@ -479,7 +488,11 @@ class Bot:
         if tkind == "mech" and tdist >= 45.0 and not flee_cond:
             ang_to_me = math.atan2(y - target["pos"][1], x - target["pos"][0])
             aimed = abs(angle_diff(target["aim"][0], ang_to_me)) < 0.3
-            if target.get("charging") and aimed:
+            if not P["cover"]:
+                pass
+            elif target.get("charging") and aimed:
+                sniped = True
+            elif P["cover_any"] and tdist < 230.0:
                 sniped = True
             elif (t - self.last_dmg_t) < 1.5:
                 sniped = True
@@ -530,13 +543,13 @@ class Bot:
                 vy += inward_f[1] * 0.9
             move_dir = unit([vx, vy])
             boost_wanted = True
-        elif tkind == "mech" and tdist < 120.0:
+        elif tkind == "mech" and tdist < P["engage_r"]:
             tp = target["pos"]
             away = unit([x - tp[0], y - tp[1]])
             if away == [0.0, 0.0]:
                 away = [1.0, 0.0]
             tang = [-away[1] * self.side, away[0] * self.side]
-            ideal = 40.0
+            ideal = P["ideal"]
             tw = target.get("weapons") or []
             if "lightning" in by_kind:
                 # lightning only reaches 45 m: close in so it actually fires (unless they hold a mortar)
