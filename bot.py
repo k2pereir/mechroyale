@@ -10,7 +10,7 @@ import mechfight as mf
 
 PI = math.pi
 TAU = 2.0 * math.pi
-P = {'ideal': 95.0, 'engage_r': 110.0, 'flee_hp': 0.45, 'cover': True, 'cover_any': True}
+P = {'ideal': 26.0, 'engage_r': 200.0, 'flee_hp': 0.12, 'cover': False, 'cover_any': False}
 
 
 def dist(a, b):
@@ -201,7 +201,7 @@ class Grid:
 
 
 class Bot:
-    name = "avoider"
+    name = "hunter"
 
     def __init__(self, hello: mf.Hello):
         self.config = hello["config"]
