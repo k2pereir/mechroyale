@@ -157,7 +157,7 @@ class Grid:
 
 
 class Bot:
-    name = "mobile-survivor-7"
+    name = "mobile-survivor-8"
 
     def __init__(self, hello: mf.Hello):
         self.config = hello["config"]
@@ -351,9 +351,9 @@ class Bot:
         if enemies:
             # nearest enemy, with a mild preference for wounded ones (finishing kills = cubes + loot)
             def _tscore(m):
-                frac = m.get("hp", 1400) / max(1.0, m.get("max_hp", 1400))
-                return dist(pos, m["pos"]) + 25.0 * frac
-            target = min(enemies[:5], key=_tscore)
+                return 0.4 * dist(pos, m["pos"]) + 0.15 * m.get("hp", 1400)
+            pool = [m for m in enemies[:6] if dist(pos, m["pos"]) < 110.0] or enemies[:1]
+            target = min(pool, key=_tscore)
             tkind = "mech"
         else:
             cand = [n for n in npcs if dist(pos, n["pos"]) < 110.0 and abs(n["pos"][2] - z) < 8.0]
@@ -425,9 +425,9 @@ class Bot:
         hold_still = False
 
         flee_cond = (
-            len(close) >= 3
-            or (hp < maxhp * 0.25 and (near or recently_hit))
-            or (tkind == "mech" and tdist < 14.0)
+            len(close) >= 5
+            or (hp < maxhp * 0.15 and (near or recently_hit))
+            or (tkind == "mech" and tdist < 8.0)
         )
 
         if zone_out:
@@ -459,17 +459,17 @@ class Bot:
                 vy += inward_f[1] * 0.9
             move_dir = unit([vx, vy])
             boost_wanted = True
-        elif tkind == "mech" and tdist < 120.0:
+        elif tkind == "mech" and tdist < 130.0:
             tp = target["pos"]
             away = unit([x - tp[0], y - tp[1]])
             if away == [0.0, 0.0]:
                 away = [1.0, 0.0]
             tang = [-away[1] * self.side, away[0] * self.side]
-            ideal = 40.0
+            ideal = 32.0
             tw = target.get("weapons") or []
             if "lightning" in by_kind:
                 # lightning only reaches 45 m: close in so it actually fires (unless they hold a mortar)
-                ideal = 55.0 if "mortar" in tw else 32.0
+                ideal = 50.0 if "mortar" in tw else 26.0
             elif "lightning" in tw:
                 ideal = 70.0
             thp = target.get("hp", 1400) / max(1.0, target.get("max_hp", 1400))
