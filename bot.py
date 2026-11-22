@@ -10,7 +10,7 @@ import mechfight as mf
 
 PI = math.pi
 TAU = 2.0 * math.pi
-P = {'ideal': 26.0, 'engage_r': 200.0, 'flee_hp': 0.12, 'cover': False, 'cover_any': False}
+P = {"ideal": 40.0, "engage_r": 120.0, "flee_hp": 0.25, "cover": True, "cover_any": False, "npc_r": 190.0, "crate_r": 120.0, "cube_r": 85.0, "vulture_t": 20.0}
 
 
 def dist(a, b):
@@ -201,7 +201,7 @@ class Grid:
 
 
 class Bot:
-    name = "hunter"
+    name = "farmer-8"
 
     def __init__(self, hello: mf.Hello):
         self.config = hello["config"]
@@ -217,6 +217,7 @@ class Bot:
         self.prev_move = [0.0, 0.0]
         self.err_logged = False
         self.cover = None
+        self.invest = None
         self.cover_until = -1.0
         self.hold_cover = False
 
@@ -409,14 +410,14 @@ class Bot:
             target = min(enemies[:5], key=_tscore)
             tkind = "mech"
         else:
-            cand = [n for n in npcs if dist(pos, n["pos"]) < 110.0 and abs(n["pos"][2] - z) < 8.0]
+            cand = [n for n in npcs if dist(pos, n["pos"]) < P["npc_r"] and abs(n["pos"][2] - z) < 8.0]
             if cand and hp > 0.35 * maxhp:
                 target = min(cand, key=lambda n: dist(pos, n["pos"]))
                 tkind = "npc"
             else:
                 crates = [
                     c for c in obs.get("crates", [])
-                    if dist(pos, c["pos"]) < 65.0 and abs(c["pos"][2] - z) < 6.0
+                    if dist(pos, c["pos"]) < P["crate_r"] and abs(c["pos"][2] - z) < 6.0
                 ]
                 if crates and hp > 0.5 * maxhp:
                     target = min(crates, key=lambda c: dist(pos, c["pos"]))
@@ -432,6 +433,11 @@ class Bot:
                 ):
                     sound_threat = s["bearing"]
                     break
+
+        for s_ in obs.get("sounds", []):
+            if s_.get("kind") == "death" and s_.get("dist") in ("near", "mid") and t > P["vulture_t"] and not enemies:
+                dd = 40.0 if s_["dist"] == "near" else 100.0
+                self.invest = [x + math.cos(s_["bearing"]) * dd, y + math.sin(s_["bearing"]) * dd, t + 14.0]
 
         # strafe flip
         if tick >= self.next_flip:
@@ -591,11 +597,14 @@ class Bot:
                 if goal is None:
                     cubes = [
                         c for c in obs.get("cubes", [])
-                        if dist(pos, c["pos"]) < 55.0 and abs(c["pos"][2] - z) < 5.0
+                        if dist(pos, c["pos"]) < P["cube_r"] and abs(c["pos"][2] - z) < 5.0
                         and dist(c["pos"], fc) < fr * 0.85
                     ]
                     if cubes:
                         goal = min(cubes, key=lambda c: dist(pos, c["pos"]))["pos"]
+            if goal is None and not hold_still and not near and self.invest and t < self.invest[2] and hp > 0.5 * maxhp \
+                    and dist(self.invest, fc) < fr * 0.9 and dist(pos, self.invest) > 8.0:
+                goal = [self.invest[0], self.invest[1], z]
             if goal is None and not hold_still and target is not None and tkind in ("npc", "crate"):
                 if tdist > 28.0:
                     goal = target["pos"]
