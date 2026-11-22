@@ -9,6 +9,13 @@ import traceback
 import mechfight as mf
 
 PI = math.pi
+PICK = "laser"      # only ever take lasers (swap any other 2nd weapon for one)
+MEM = False
+ROAM = False
+LDODGE = False
+CRATE = 110.0
+LTARGET = False
+IDEAL = 40.0
 TAU = 2.0 * math.pi
 
 
@@ -157,7 +164,7 @@ class Grid:
 
 
 class Bot:
-    name = "mobile-survivor-8"
+    name = "mobile-survivor-9"
 
     def __init__(self, hello: mf.Hello):
         self.config = hello["config"]
@@ -172,6 +179,9 @@ class Bot:
         self.unstick_until = -1
         self.prev_move = [0.0, 0.0]
         self.err_logged = False
+        self.pmem = {}
+        self.roam_goal = None
+        self.roam_t = -99.0
 
     # ------------------------------------------------------------------ helpers
     def zone_state(self, zone, t):
@@ -351,9 +361,12 @@ class Bot:
         if enemies:
             # nearest enemy, with a mild preference for wounded ones (finishing kills = cubes + loot)
             def _tscore(m):
-                return 0.4 * dist(pos, m["pos"]) + 0.15 * m.get("hp", 1400)
-            pool = [m for m in enemies[:6] if dist(pos, m["pos"]) < 110.0] or enemies[:1]
-            target = min(pool, key=_tscore)
+                frac = m.get("hp", 1400) / max(1.0, m.get("max_hp", 1400))
+                sc = dist(pos, m["pos"]) + 25.0 * frac
+                if LTARGET and "laser" not in by_kind and "laser" in (m.get("weapons") or []):
+                    sc -= 40.0
+                return sc
+            target = min(enemies[:5], key=_tscore)
             tkind = "mech"
         else:
             cand = [n for n in npcs if dist(pos, n["pos"]) < 110.0 and abs(n["pos"][2] - z) < 8.0]
@@ -363,7 +376,7 @@ class Bot:
             else:
                 crates = [
                     c for c in obs.get("crates", [])
-                    if dist(pos, c["pos"]) < 65.0 and abs(c["pos"][2] - z) < 6.0
+                    if dist(pos, c["pos"]) < CRATE and abs(c["pos"][2] - z) < 6.0
                 ]
                 if crates and hp > 0.5 * maxhp:
                     target = min(crates, key=lambda c: dist(pos, c["pos"]))
@@ -403,16 +416,46 @@ class Bot:
         ]
         held_kinds = set(by_kind.keys())
         wanted = []
-        for p in pickups:
-            k = p["kind"]
-            if k in held_kinds:
-                continue
+        sec_kind = secondary.get("kind") if secondary else None
+        if PICK == "laser":
+            ok_kinds = ("laser",)
+        else:
+            ok_kinds = ("mortar", "laser", "lightning")
+
+        def _want(k):
+            if k in held_kinds or k not in ok_kinds:
+                return False
             if secondary is None:
+                return True
+            if PICK == "laser":
+                return k == "laser" and sec_kind != "laser"
+            return sec_kind == "mortar" and k in ("laser", "lightning")
+
+        for p in pickups:
+            if _want(p["kind"]):
                 wanted.append(p)
-            elif secondary.get("kind") == "mortar" and k in ("laser", "lightning"):
-                wanted.append(p)
+        # remember pickups we have seen (they never despawn), forget ones that are gone
+        if MEM:
+            vis = {p["id"] for p in obs.get("pickups", [])}
+            for p in pickups:
+                self.pmem[p["id"]] = (p["kind"], p["pos"], t)
+            for pid in list(self.pmem.keys()):
+                k, pp, ts = self.pmem[pid]
+                if pid not in vis and dist(pos, pp) < 25.0 and abs(z - pp[2]) < 6.0:
+                    del self.pmem[pid]
+                elif t - ts > 150.0:
+                    del self.pmem[pid]
+            if not wanted:
+                cands = [
+                    (k, pp) for pid, (k, pp, ts) in self.pmem.items()
+                    if _want(k) and dist(pp, fc) < fr * 0.9
+                ]
+                if cands:
+                    kk, pp = min(cands, key=lambda c: dist(pos, c[1]))
+                    wanted_mem = {"id": -1, "kind": kk, "pos": pp}
+                    wanted.append(wanted_mem)
         for p in wanted:
-            if dist(pos, p["pos"]) <= 3.7:
+            if p["id"] >= 0 and dist(pos, p["pos"]) <= 3.7:
                 action["take"] = p["id"]
                 if secondary is not None:
                     action["drop"] = 1
@@ -425,9 +468,9 @@ class Bot:
         hold_still = False
 
         flee_cond = (
-            len(close) >= 5
-            or (hp < maxhp * 0.15 and (near or recently_hit))
-            or (tkind == "mech" and tdist < 8.0)
+            len(close) >= 3
+            or (hp < maxhp * 0.25 and (near or recently_hit))
+            or (tkind == "mech" and tdist < 14.0)
         )
 
         if zone_out:
@@ -459,17 +502,17 @@ class Bot:
                 vy += inward_f[1] * 0.9
             move_dir = unit([vx, vy])
             boost_wanted = True
-        elif tkind == "mech" and tdist < 130.0:
+        elif tkind == "mech" and tdist < 120.0:
             tp = target["pos"]
             away = unit([x - tp[0], y - tp[1]])
             if away == [0.0, 0.0]:
                 away = [1.0, 0.0]
             tang = [-away[1] * self.side, away[0] * self.side]
-            ideal = 32.0
+            ideal = IDEAL
             tw = target.get("weapons") or []
             if "lightning" in by_kind:
                 # lightning only reaches 45 m: close in so it actually fires (unless they hold a mortar)
-                ideal = 50.0 if "mortar" in tw else 26.0
+                ideal = 55.0 if "mortar" in tw else 32.0
             elif "lightning" in tw:
                 ideal = 70.0
             thp = target.get("hp", 1400) / max(1.0, target.get("max_hp", 1400))
@@ -502,7 +545,7 @@ class Bot:
             if goal is None and not hold_still and not near:
                 if wanted:
                     pk = min(wanted, key=lambda p: dist(pos, p["pos"]))
-                    if dist(pos, pk["pos"]) < 140.0:
+                    if dist(pos, pk["pos"]) < (230.0 if MEM else 140.0):
                         goal = pk["pos"]
                 if goal is None:
                     cubes = [
@@ -531,6 +574,20 @@ class Bot:
                     boost_wanted = recently_hit
                 elif dist(pos, fc) > max(10.0, fr * 0.55):
                     goal = fc
+                elif ROAM and t < 240.0 and PICK == "laser" and "laser" not in held_kinds:
+                    if (
+                        self.roam_goal is None or dist(pos, self.roam_goal) < 10.0
+                        or t - self.roam_t > 25.0 or dist(self.roam_goal, fc) > fr * 0.8
+                    ):
+                        for _ in range(12):
+                            a = self.rng.uniform(-PI, PI)
+                            r = fr * 0.7 * math.sqrt(self.rng.random())
+                            cand = [fc[0] + math.cos(a) * r, fc[1] + math.sin(a) * r]
+                            if dist(cand, pos) > 70.0 and not (self.grid.ok and self.grid.blocked(cand[0], cand[1])):
+                                self.roam_goal = cand
+                                self.roam_t = t
+                                break
+                    goal = self.roam_goal
                 else:
                     hold_still = True
             if goal is not None and move_dir is None:
@@ -544,6 +601,25 @@ class Bot:
 
         # ---------- dodge incoming shots
         dv = self.dodge(pos, obs.get("projectiles", []))
+        if LDODGE:
+            for e in enemies:
+                if not e.get("charging"):
+                    continue
+                ex, ey = e["pos"][0], e["pos"][1]
+                d = math.hypot(x - ex, y - ey)
+                if d > 285.0 or d < 1.0:
+                    continue
+                ea = e.get("aim", [0.0, 0.0])[0]
+                bearing = math.atan2(y - ey, x - ex)
+                if abs(angle_diff(ea, bearing)) < 0.1 + 6.0 / d:
+                    # cross product sign: which side of its aim line we are on; move further out that way
+                    side_sign = 1.0 if angle_diff(bearing, ea) > 0 else -1.0
+                    if abs(angle_diff(bearing, ea)) < 0.01:
+                        side_sign = self.side
+                    px = -math.sin(ea) * side_sign
+                    py = math.cos(ea) * side_sign
+                    dv[0] += px * 2.5
+                    dv[1] += py * 2.5
         dodging = abs(dv[0]) + abs(dv[1]) > 1e-6
         if dodging:
             move_dir = [move_dir[0] + dv[0], move_dir[1] + dv[1]]
