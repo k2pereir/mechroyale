@@ -201,7 +201,7 @@ class Grid:
 
 
 class Bot:
-    name = "farmer-8"
+    name = "stormer-9"
 
     def __init__(self, hello: mf.Hello):
         self.config = hello["config"]
@@ -468,7 +468,7 @@ class Bot:
                 continue
             if secondary is None:
                 wanted.append(p)
-            elif (secondary.get("kind") == "mortar" and k in ("laser", "lightning")) or (secondary.get("kind") == "lightning" and k == "laser"):
+            elif (secondary.get("kind") == "mortar" and k in ("laser", "lightning")) or (secondary.get("kind") == "laser" and k == "lightning"):
                 wanted.append(p)
         for p in wanted:
             if dist(pos, p["pos"]) <= 3.7:
@@ -486,7 +486,7 @@ class Bot:
         flee_cond = (
             len(close) >= 3
             or (hp < maxhp * P["flee_hp"] and (near or recently_hit))
-            or (tkind == "mech" and tdist < 14.0)
+            or (tkind == "mech" and tdist < 14.0 and "lightning" not in by_kind)
         )
 
         sniped = False
@@ -549,7 +549,7 @@ class Bot:
                 vy += inward_f[1] * 0.9
             move_dir = unit([vx, vy])
             boost_wanted = True
-        elif tkind == "mech" and tdist < P["engage_r"]:
+        elif tkind == "mech" and tdist < (170.0 if "lightning" in by_kind else P["engage_r"]):
             tp = target["pos"]
             away = unit([x - tp[0], y - tp[1]])
             if away == [0.0, 0.0]:
@@ -559,7 +559,9 @@ class Bot:
             tw = target.get("weapons") or []
             if "lightning" in by_kind:
                 # lightning only reaches 45 m: close in so it actually fires (unless they hold a mortar)
-                ideal = 55.0 if "mortar" in tw else 32.0
+                ideal = 55.0 if "mortar" in tw else 20.0
+                if tdist > 50.0 and tdist < 120.0 and energy > 50.0 and "mortar" not in tw:
+                    boost_wanted = True
             elif "lightning" in tw:
                 ideal = 70.0
             thp = target.get("hp", 1400) / max(1.0, target.get("max_hp", 1400))
@@ -591,7 +593,7 @@ class Bot:
                     break
             if goal is None and not hold_still and not near:
                 if wanted:
-                    pk = min(wanted, key=lambda p: dist(pos, p["pos"]) - (70.0 if p["kind"] == "laser" else 25.0 if p["kind"] == "lightning" else 0.0))
+                    pk = min(wanted, key=lambda p: dist(pos, p["pos"]) - (90.0 if p["kind"] == "lightning" else 40.0 if p["kind"] == "laser" else 0.0))
                     if dist(pos, pk["pos"]) < 210.0 and dist(pk["pos"], fc) < fr * 0.95:
                         goal = pk["pos"]
                 if goal is None:
